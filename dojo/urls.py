@@ -2,7 +2,12 @@ from django.conf import settings
 from django.conf.urls import include, url
 from django.conf.urls.static import static
 from django.contrib import admin
+from rest_framework_swagger.views import get_swagger_view
 from tastypie.api import Api
+from tastypie_swagger.views import SwaggerView, ResourcesView, SchemaView
+from rest_framework.routers import DefaultRouter
+from rest_framework.authtoken import views as tokenviews
+from django.http import HttpResponse
 
 from dojo import views
 from dojo.api import UserResource, ProductResource, EngagementResource, \
@@ -11,7 +16,15 @@ from dojo.api import UserResource, ProductResource, EngagementResource, \
     ReImportScanResource, JiraResource, JIRA_ConfResource, EndpointResource, \
     JIRA_IssueResource, ToolProductSettingsResource, Tool_ConfigurationResource, \
     Tool_TypeResource, LanguagesResource, LanguageTypeResource, App_AnalysisResource, \
-    BuildDetails
+    BuildDetails, DevelopmentEnvironmentResource, ProductTypeResource, TestTypeResource
+from dojo.api_v2.views import EndPointViewSet, EngagementViewSet, \
+    FindingTemplatesViewSet, FindingViewSet, JiraConfigurationsViewSet, \
+    JiraIssuesViewSet, JiraViewSet, ProductViewSet, ScanSettingsViewSet, \
+    ScansViewSet, StubFindingsViewSet, TestsViewSet, TestTypesViewSet, \
+    ToolConfigurationsViewSet, ToolProductSettingsViewSet, ToolTypesViewSet, \
+    UsersViewSet, ImportScanView, ReImportScanView, ProductTypeViewSet, DojoMetaViewSet, \
+    DevelopmentEnvironmentViewSet
+
 from dojo.utils import get_system_setting
 from dojo.development_environment.urls import urlpatterns as dev_env_urls
 from dojo.endpoint.urls import urlpatterns as endpoint_urls
@@ -36,7 +49,8 @@ from dojo.system_settings.urls import urlpatterns as system_settings_urls
 from dojo.notifications.urls import urlpatterns as notifications_urls
 from dojo.object.urls import urlpatterns as object_urls
 from dojo.benchmark.urls import urlpatterns as benchmark_urls
-import sys
+from dojo.rules.urls import urlpatterns as rule_urls
+from dojo.notes.urls import urlpatterns as notes_urls
 
 admin.autodiscover()
 
@@ -46,7 +60,10 @@ admin.autodiscover()
 v1_api = Api(api_name='v1', )
 v1_api.register(UserResource())
 v1_api.register(ProductResource())
+v1_api.register(ProductTypeResource())
 v1_api.register(EngagementResource())
+v1_api.register(DevelopmentEnvironmentResource())
+v1_api.register(TestTypeResource())
 v1_api.register(TestResource())
 v1_api.register(FindingResource())
 v1_api.register(FindingTemplateResource())
@@ -67,6 +84,31 @@ v1_api.register(LanguageTypeResource())
 v1_api.register(App_AnalysisResource())
 v1_api.register(BuildDetails())
 # v1_api.register(IPScanResource())
+
+# v2 api written in django-rest-framework
+v2_api = DefaultRouter()
+v2_api.register(r'endpoints', EndPointViewSet)
+v2_api.register(r'engagements', EngagementViewSet)
+v2_api.register(r'development_environments', DevelopmentEnvironmentViewSet)
+v2_api.register(r'finding_templates', FindingTemplatesViewSet)
+v2_api.register(r'findings', FindingViewSet)
+v2_api.register(r'jira_configurations', JiraConfigurationsViewSet)
+v2_api.register(r'jira_finding_mappings', JiraIssuesViewSet)
+v2_api.register(r'jira_product_configurations', JiraViewSet)
+v2_api.register(r'products', ProductViewSet)
+v2_api.register(r'product_types', ProductTypeViewSet)
+v2_api.register(r'scan_settings', ScanSettingsViewSet)
+v2_api.register(r'scans', ScansViewSet)
+v2_api.register(r'stub_findings', StubFindingsViewSet)
+v2_api.register(r'tests', TestsViewSet)
+v2_api.register(r'test_types', TestTypesViewSet)
+v2_api.register(r'tool_configurations', ToolConfigurationsViewSet)
+v2_api.register(r'tool_product_settings', ToolProductSettingsViewSet)
+v2_api.register(r'tool_types', ToolTypesViewSet)
+v2_api.register(r'users', UsersViewSet)
+v2_api.register(r'import-scan', ImportScanView, base_name='importscan')
+v2_api.register(r'reimport-scan', ReImportScanView, base_name='reimportscan')
+v2_api.register(r'metadata', DojoMetaViewSet, base_name='metadata')
 
 
 ur = []
@@ -93,8 +135,8 @@ ur += system_settings_urls
 ur += notifications_urls
 ur += object_urls
 ur += benchmark_urls
-
-from tastypie_swagger.views import SwaggerView, ResourcesView, SchemaView
+ur += rule_urls
+ur += notes_urls
 
 swagger_urls = [
     url(r'^$', SwaggerView.as_view(), name='index'),
@@ -103,13 +145,13 @@ swagger_urls = [
     url(r'^schema/$', SchemaView.as_view(), name='schema'),
 ]
 
-
+schema_view = get_swagger_view(title='Defect Dojo API v2')
 
 urlpatterns = [
-    #  django admin
-    url(r'^%sadmin/' % get_system_setting('url_prefix'), include(admin.site.urls)),
     #  tastypie api
     url(r'^%sapi/' % get_system_setting('url_prefix'), include(v1_api.urls)),
+    #  Django Rest Framework API v2
+    url(r'^%sapi/v2/' % get_system_setting('url_prefix'), include(v2_api.urls)),
     # api doc urls
     url(r'%sapi/v1/doc/' % get_system_setting('url_prefix'),
         include(swagger_urls, namespace='tastypie_swagger'),
@@ -121,7 +163,16 @@ urlpatterns = [
     url(r'^%shistory/(?P<cid>\d+)/(?P<oid>\d+)$' % get_system_setting('url_prefix'), views.action_history,
         name='action_history'),
     url(r'^%s' % get_system_setting('url_prefix'), include(ur)),
+    url(r'^api/v2/api-token-auth/', tokenviews.obtain_auth_token),
+    url(r'^api/v2/doc/', schema_view, name="api_v2_schema"),
+    url(r'^robots.txt', lambda x: HttpResponse("User-Agent: *\nDisallow: /", content_type="text/plain"), name="robots_file"),
+
 ]
+
+if hasattr(settings, 'DJANGO_ADMIN_ENABLED'):
+    if settings.DJANGO_ADMIN_ENABLED:
+        #  django admin
+        urlpatterns += [url(r'^%sadmin/' % get_system_setting('url_prefix'), include(admin.site.urls))]
 
 if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

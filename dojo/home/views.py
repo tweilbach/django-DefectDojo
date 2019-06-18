@@ -5,7 +5,6 @@ from datetime import datetime, timedelta
 from math import ceil
 
 from dateutil.relativedelta import relativedelta
-from django.conf import settings
 from django.contrib.auth.decorators import user_passes_test
 from django.core.urlresolvers import reverse
 from django.http import HttpResponseRedirect
@@ -13,7 +12,7 @@ from django.shortcuts import render
 from django.utils import timezone
 
 from dojo.models import Finding, Engagement, Risk_Acceptance
-from dojo.utils import add_breadcrumb, get_punchcard_data, get_system_setting
+from dojo.utils import add_breadcrumb, get_punchcard_data
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +60,7 @@ def dashboard(request):
 
         # forever counts
         findings = Finding.objects.filter(reporter=request.user,
-                                          verified=True, duplicate=True)
+                                          verified=True, duplicate=False)
 
     sev_counts = {'Critical': 0,
                   'High': 0,
@@ -71,7 +70,7 @@ def dashboard(request):
 
     for finding in findings:
         if finding.severity:
-            sev_counts[finding.severity] += 1
+            sev_counts[finding.severity.capitalize()] += 1
 
     by_month = list()
 

@@ -12,10 +12,8 @@ from tastypie.http import HttpCreated
 from tastypie.resources import ModelResource, Resource
 from tastypie.serializers import Serializer
 from tastypie.validation import FormValidation, Validation
-from django.core.exceptions import ObjectDoesNotExist
 from django.urls.exceptions import Resolver404
 from django.utils import timezone
-from django.conf import settings
 
 
 from dojo.models import Product, Engagement, Test, Finding, \
@@ -23,14 +21,14 @@ from dojo.models import Product, Engagement, Test, Finding, \
     Finding_Template, Test_Type, Development_Environment, \
     BurpRawRequestResponse, Endpoint, Notes, JIRA_PKey, JIRA_Conf, \
     JIRA_Issue, Tool_Product_Settings, Tool_Configuration, Tool_Type, \
-    Languages, Language_Type, App_Analysis
-from dojo.forms import ProductForm, EngForm2, TestForm, \
+    Languages, Language_Type, App_Analysis, Product_Type
+from dojo.forms import ProductForm, EngForm, TestForm, \
     ScanSettingsForm, FindingForm, StubFindingForm, FindingTemplateForm, \
     ImportScanForm, SEVERITY_CHOICES, JIRAForm, JIRA_PKeyForm, EditEndpointForm, \
-    AddEndpointForm, JIRA_IssueForm, ToolConfigForm, ToolProductSettingsForm, \
-    ToolTypeForm, LanguagesTypeForm, Languages_TypeTypeForm, App_AnalysisTypeForm
+    JIRA_IssueForm, ToolConfigForm, ToolProductSettingsForm, \
+    ToolTypeForm, LanguagesTypeForm, Languages_TypeTypeForm, App_AnalysisTypeForm, \
+    Development_EnvironmentForm, Product_TypeForm, Test_TypeForm
 from dojo.tools.factory import import_parser_factory
-from dojo.utils import get_system_setting
 from datetime import datetime
 from object.parser import import_object_eng
 
@@ -46,6 +44,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 """
 
+
 class ModelFormValidation(FormValidation):
     """
     Override tastypie's standard ``FormValidation`` since this does not care
@@ -55,7 +54,7 @@ class ModelFormValidation(FormValidation):
     resource = ModelResource
 
     def __init__(self, **kwargs):
-        if not 'resource' in kwargs:
+        if 'resource' not in kwargs:
             raise ImproperlyConfigured("You must provide a 'resource' to 'ModelFormValidation' classes.")
 
         self.resource = kwargs.pop('resource')
@@ -66,8 +65,7 @@ class ModelFormValidation(FormValidation):
         """ Return the pk of a resource URI """
         base_resource_uri = resource_field.to().get_resource_uri()
         if not resource_uri.startswith(base_resource_uri):
-            raise Exception("Couldn't match resource_uri {0} with {1}".format(
-                                        resource_uri, base_resource_uri))
+            raise Exception("Couldn't match resource_uri {0} with {1}".format(resource_uri, base_resource_uri))
         before, after = resource_uri.split(base_resource_uri)
         return after[:-1] if after.endswith('/') else after
 
@@ -78,7 +76,7 @@ class ModelFormValidation(FormValidation):
         for name, rel_field in rsc.fields.items():
             data = kwargs['data']
             if not issubclass(rel_field.__class__, RelatedField):
-                continue # Not a resource field
+                continue  # Not a resource field
             if name in data and data[name] is not None:
                 resource_uri = (data[name] if rel_field.full is False
                                             else data[name]['resource_uri'])
@@ -328,6 +326,40 @@ class UserResource(BaseModelResource):
 
 
 """
+    /api/v1/product_types/
+    GET [/id/], DELETE [/id/]
+    Expects: no params
+    Returns product_types: ALL
+    Relevant apply filter ?id=?
+
+    POST, PUT [/id/]
+    Expects *name
+"""
+
+
+class ProductTypeResource(BaseModelResource):
+
+    class Meta:
+        resource_name = 'product_types'
+        list_allowed_methods = ['get', 'post']
+        # disabled delete. Should not be allowed without fine authorization.
+        detail_allowed_methods = ['get', 'post', 'put']
+        queryset = Product_Type.objects.all().order_by('id')
+        include_resource_uri = True
+        filtering = {
+            'id': ALL,
+            'name': ALL,
+        }
+        authentication = DojoApiKeyAuthentication()
+        authorization = DjangoAuthorization()
+        serializer = Serializer(formats=['json'])
+
+        @property
+        def validation(self):
+            return ModelFormValidation(form_class=Product_TypeForm, resource=ProductTypeResource)
+
+
+"""
     POST, PUT
     Expects *product name, *description, *prod_type [1-7]
 """
@@ -361,12 +393,108 @@ class ProductResource(BaseModelResource):
             return ModelFormValidation(form_class=ProductForm, resource=ProductResource)
 
     def dehydrate(self, bundle):
+        # Append the tags in a comma delimited list with the tag element
+        """
+        tags = ""
+        for tag in bundle.obj.tags:
+            tags = tags + str(tag) + ","
+        if len(tags) > 0:
+            tags = tags[:-1]
+        bundle.data['tags'] = tags
+        """
         try:
             bundle.data['prod_type'] = bundle.obj.prod_type
         except:
             bundle.data['prod_type'] = 'unknown'
         bundle.data['findings_count'] = bundle.obj.findings_count
         return bundle
+
+    def obj_create(self, bundle, request=None, **kwargs):
+        bundle = super(ProductResource, self).obj_create(bundle)
+        """
+        tags = bundle.data['tags']
+        bundle.obj.tags = tags
+        """
+        return bundle
+
+    def obj_update(self, bundle, request=None, **kwargs):
+        bundle = super(ProductResource, self).obj_update(bundle, request, **kwargs)
+        """
+        tags = bundle.data['tags']
+        bundle.obj.tags = tags
+        """
+        return bundle
+
+
+"""
+    /api/v1/tool_configurations/
+    GET [/id/], DELETE [/id/]
+    Expects: no params or id
+    Returns Tool_ConfigurationResource
+    Relevant apply filter ?test_type=?, ?id=?
+
+    POST, PUT, DLETE [/id/]
+"""
+
+
+class Tool_TypeResource(BaseModelResource):
+
+    class Meta:
+        resource_name = 'tool_types'
+        list_allowed_methods = ['get', 'post', 'put', 'delete']
+        detail_allowed_methods = ['get', 'post', 'put', 'delete']
+        queryset = Tool_Type.objects.all()
+        include_resource_uri = True
+        filtering = {
+            'id': ALL,
+            'name': ALL,
+            'description': ALL,
+        }
+        authentication = DojoApiKeyAuthentication()
+        authorization = DjangoAuthorization()
+        serializer = Serializer(formats=['json'])
+
+        @property
+        def validation(self):
+            return ModelFormValidation(form_class=ToolTypeForm, resource=Tool_TypeResource)
+
+
+"""
+    /api/v1/tool_configurations/
+    GET [/id/], DELETE [/id/]
+    Expects: no params or id
+    Returns Tool_ConfigurationResource
+    Relevant apply filter ?test_type=?, ?id=?
+
+    POST, PUT, DLETE [/id/]
+"""
+
+
+class Tool_ConfigurationResource(BaseModelResource):
+
+    tool_type = fields.ForeignKey(Tool_TypeResource, 'tool_type', full=False, null=False)
+
+    class Meta:
+        resource_name = 'tool_configurations'
+        list_allowed_methods = ['get', 'post', 'put', 'delete']
+        detail_allowed_methods = ['get', 'post', 'put', 'delete']
+        queryset = Tool_Configuration.objects.all()
+        include_resource_uri = True
+        filtering = {
+            'id': ALL,
+            'name': ALL,
+            'tool_type': ALL_WITH_RELATIONS,
+            'tool_project_id': ALL,
+            'url': ALL,
+            'authentication_type': ALL,
+        }
+        authentication = DojoApiKeyAuthentication()
+        authorization = DjangoAuthorization()
+        serializer = Serializer(formats=['json'])
+
+        @property
+        def validation(self):
+            return ModelFormValidation(form_class=ToolConfigForm, resource=Tool_ConfigurationResource)
 
 
 """
@@ -381,12 +509,18 @@ class EngagementResource(BaseModelResource):
                                 full=False, null=False)
     lead = fields.ForeignKey(UserResource, 'lead',
                              full=False, null=True)
+    source_code_management_server = fields.ForeignKey(Tool_ConfigurationResource, 'source_code_management_server',
+                            full=False, null=True)
+    build_server = fields.ForeignKey(Tool_ConfigurationResource, 'build_server',
+                            full=False, null=True)
+    orchestration_engine = fields.ForeignKey(Tool_ConfigurationResource, 'orchestration_engine',
+                            full=False, null=True)
 
     class Meta:
         resource_name = 'engagements'
-        list_allowed_methods = ['get', 'post']
+        list_allowed_methods = ['get', 'post', 'patch']
         # disabled delete for /id/
-        detail_allowed_methods = ['get', 'post', 'put']
+        detail_allowed_methods = ['get', 'post', 'put', 'patch']
         queryset = Engagement.objects.all()
         include_resource_uri = True
         filtering = {
@@ -410,7 +544,7 @@ class EngagementResource(BaseModelResource):
 
         @property
         def validation(self):
-            return ModelFormValidation(form_class=EngForm2, resource=EngagementResource)
+            return ModelFormValidation(form_class=EngForm, resource=EngagementResource)
 
     def dehydrate(self, bundle):
         if bundle.obj.eng_type is not None:
@@ -422,6 +556,7 @@ class EngagementResource(BaseModelResource):
         bundle.data['requester'] = bundle.obj.requester
         return bundle
 
+
 """
     /api/v1/app_analysis/
     GET [/id/], DELETE [/id/]
@@ -431,6 +566,7 @@ class EngagementResource(BaseModelResource):
 
     POST, PUT, DLETE [/id/]
 """
+
 
 class App_AnalysisResource(BaseModelResource):
 
@@ -462,6 +598,7 @@ class App_AnalysisResource(BaseModelResource):
         def validation(self):
             return ModelFormValidation(form_class=App_AnalysisTypeForm, resource=App_AnalysisResource)
 
+
 """
     /api/v1/language_types/
     GET [/id/], DELETE [/id/]
@@ -471,6 +608,7 @@ class App_AnalysisResource(BaseModelResource):
 
     POST, PUT, DLETE [/id/]
 """
+
 
 class LanguageTypeResource(BaseModelResource):
 
@@ -492,6 +630,7 @@ class LanguageTypeResource(BaseModelResource):
         def validation(self):
             return ModelFormValidation(form_class=Languages_TypeTypeForm, resource=LanguageTypeResource)
 
+
 """
     /api/v1/languages/
     GET [/id/], DELETE [/id/]
@@ -499,16 +638,16 @@ class LanguageTypeResource(BaseModelResource):
     Returns Tool_ConfigurationResource
     Relevant apply filter ?test_type=?, ?id=?
 
-    POST, PUT, DLETE [/id/]
+    POST, PUT, DELETE [/id/]
 """
+
 
 class LanguagesResource(BaseModelResource):
 
     product = fields.ForeignKey(ProductResource, 'product',
                                 full=False, null=False)
 
-    language_type = fields.ForeignKey(LanguageTypeResource, 'language',
-                                full=False, null=False)
+    language_type = fields.ForeignKey(LanguageTypeResource, 'language', full=False, null=False)
 
     user = fields.ForeignKey(UserResource, 'user', null=False)
 
@@ -538,74 +677,6 @@ class LanguagesResource(BaseModelResource):
 
 
 """
-    /api/v1/tool_configurations/
-    GET [/id/], DELETE [/id/]
-    Expects: no params or id
-    Returns Tool_ConfigurationResource
-    Relevant apply filter ?test_type=?, ?id=?
-
-    POST, PUT, DLETE [/id/]
-"""
-
-class Tool_TypeResource(BaseModelResource):
-
-    class Meta:
-        resource_name = 'tool_types'
-        list_allowed_methods = ['get', 'post', 'put', 'delete']
-        detail_allowed_methods = ['get', 'post', 'put', 'delete']
-        queryset = Tool_Type.objects.all()
-        include_resource_uri = True
-        filtering = {
-            'id': ALL,
-            'name': ALL,
-            'description': ALL,
-        }
-        authentication = DojoApiKeyAuthentication()
-        authorization = DjangoAuthorization()
-        serializer = Serializer(formats=['json'])
-
-        @property
-        def validation(self):
-            return ModelFormValidation(form_class=ToolTypeForm, resource=Tool_TypeResource)
-
-"""
-    /api/v1/tool_configurations/
-    GET [/id/], DELETE [/id/]
-    Expects: no params or id
-    Returns Tool_ConfigurationResource
-    Relevant apply filter ?test_type=?, ?id=?
-
-    POST, PUT, DLETE [/id/]
-"""
-
-class Tool_ConfigurationResource(BaseModelResource):
-
-    tool_type = fields.ForeignKey(Tool_TypeResource, 'tool_type',
-                                full=False, null=False)
-    class Meta:
-        resource_name = 'tool_configurations'
-        list_allowed_methods = ['get', 'post', 'put', 'delete']
-        detail_allowed_methods = ['get', 'post', 'put', 'delete']
-        queryset = Tool_Configuration.objects.all()
-        include_resource_uri = True
-        filtering = {
-            'id': ALL,
-            'name': ALL,
-            'tool_type': ALL_WITH_RELATIONS,
-            'name': ALL,
-            'tool_project_id': ALL,
-            'url': ALL,
-            'authentication_type': ALL,
-        }
-        authentication = DojoApiKeyAuthentication()
-        authorization = DjangoAuthorization()
-        serializer = Serializer(formats=['json'])
-
-        @property
-        def validation(self):
-            return ModelFormValidation(form_class=ToolConfigForm, resource=Tool_ConfigurationResource)
-
-"""
     /api/v1/tool_product_settings/
     GET [/id/], DELETE [/id/]
     Expects: no params or id
@@ -615,12 +686,13 @@ class Tool_ConfigurationResource(BaseModelResource):
     POST, PUT, DLETE [/id/]
 """
 
+
 class ToolProductSettingsResource(BaseModelResource):
 
     product = fields.ForeignKey(ProductResource, 'product',
                                 full=False, null=False)
-    tool_configuration = fields.ForeignKey(Tool_ConfigurationResource, 'tool_configuration',
-                                full=False, null=False)
+    tool_configuration = fields.ForeignKey(Tool_ConfigurationResource, 'tool_configuration', full=False, null=False)
+
     class Meta:
         resource_name = 'tool_product_settings'
         list_allowed_methods = ['get', 'post', 'put', 'delete']
@@ -632,7 +704,6 @@ class ToolProductSettingsResource(BaseModelResource):
             'name': ALL,
             'product': ALL_WITH_RELATIONS,
             'tool_configuration': ALL_WITH_RELATIONS,
-            'name': ALL,
             'tool_project_id': ALL,
             'url': ALL,
         }
@@ -654,6 +725,7 @@ class ToolProductSettingsResource(BaseModelResource):
 
     POST, PUT, DLETE [/id/]
 """
+
 
 class EndpointResource(BaseModelResource):
 
@@ -679,6 +751,7 @@ class EndpointResource(BaseModelResource):
         def validation(self):
             return ModelFormValidation(form_class=EditEndpointForm, resource=EndpointResource)
 
+
 """
     /api/v1/jira_configurations/
     GET [/id/], DELETE [/id/]
@@ -687,6 +760,7 @@ class EndpointResource(BaseModelResource):
 
     POST, PUT [/id/]
 """
+
 
 class JIRA_IssueResource(BaseModelResource):
 
@@ -709,6 +783,7 @@ class JIRA_IssueResource(BaseModelResource):
         def validation(self):
             return ModelFormValidation(form_class=JIRA_IssueForm, resource=JIRA_IssueResource)
 
+
 """
     /api/v1/jira_configurations/
     GET [/id/], DELETE [/id/]
@@ -717,6 +792,7 @@ class JIRA_IssueResource(BaseModelResource):
 
     POST, PUT [/id/]
 """
+
 
 class JIRA_ConfResource(BaseModelResource):
 
@@ -738,6 +814,7 @@ class JIRA_ConfResource(BaseModelResource):
         def validation(self):
             return ModelFormValidation(form_class=JIRAForm, resource=JIRA_ConfResource)
 
+
 """
     /api/v1/jira/
     GET [/id/], DELETE [/id/]
@@ -746,11 +823,13 @@ class JIRA_ConfResource(BaseModelResource):
     POST, PUT, DELETE [/id/]
 """
 
+
 class JiraResource(BaseModelResource):
     product = fields.ForeignKey(ProductResource, 'product',
                                 full=False, null=False)
     conf = fields.ForeignKey(JIRA_ConfResource, 'conf',
                                 full=False, null=True)
+
     class Meta:
         resource_name = 'jira_product_configurations'
         list_allowed_methods = ['get', 'post', 'put', 'delete']
@@ -776,6 +855,75 @@ class JiraResource(BaseModelResource):
         def validation(self):
             return ModelFormValidation(form_class=JIRA_PKeyForm, resource=JiraResource)
 
+
+"""
+    /api/v1/environments/
+    GET [/id/]
+    Expects: no params
+    Returns environments: ALL
+    Relevant apply filter ?id=?
+
+    POST, PUT [/id/]
+    Expects *name
+"""
+
+
+class DevelopmentEnvironmentResource(BaseModelResource):
+
+    class Meta:
+        resource_name = 'development_environments'
+        list_allowed_methods = ['get', 'post']
+        # disabled delete. Should not be allowed without fine authorization.
+        detail_allowed_methods = ['get', 'post', 'put']
+        queryset = Development_Environment.objects.all().order_by('id')
+        include_resource_uri = True
+        filtering = {
+            'id': ALL,
+            'name': ALL,
+        }
+        authentication = DojoApiKeyAuthentication()
+        authorization = DjangoAuthorization()
+        serializer = Serializer(formats=['json'])
+
+        @property
+        def validation(self):
+            return ModelFormValidation(form_class=Development_EnvironmentForm, resource=DevelopmentEnvironmentResource)
+
+
+"""
+    /api/v1/test_types/
+    GET [/id/]
+    Expects: no params
+    Returns environments: ALL
+    Relevant apply filter ?id=?
+
+    POST, PUT [/id/]
+    Expects *name
+"""
+
+
+class TestTypeResource(BaseModelResource):
+
+    class Meta:
+        resource_name = 'test_types'
+        list_allowed_methods = ['get', 'post']
+        # disabled delete. Should not be allowed without fine authorization.
+        detail_allowed_methods = ['get', 'post', 'put']
+        queryset = Test_Type.objects.all().order_by('id')
+        include_resource_uri = True
+        filtering = {
+            'id': ALL,
+            'name': ALL,
+        }
+        authentication = DojoApiKeyAuthentication()
+        authorization = DjangoAuthorization()
+        serializer = Serializer(formats=['json'])
+
+        @property
+        def validation(self):
+            return ModelFormValidation(form_class=Test_TypeForm, resource=TestTypeResource)
+
+
 """
     /api/v1/tests/
     GET [/id/], DELETE [/id/]
@@ -787,6 +935,7 @@ class JiraResource(BaseModelResource):
     Expects *test_type, *engagement, *target_start, *target_end,
     estimated_time, actual_time, percent_complete, notes
 """
+
 
 class TestResource(BaseModelResource):
     engagement = fields.ForeignKey(EngagementResource, 'engagement',
@@ -829,6 +978,7 @@ class RiskAcceptanceResource(BaseModelResource):
         detail_allowed_methods = ['get']
         queryset = Risk_Acceptance.objects.all().order_by('created')
 
+
 """
     /api/v1/findings/
     GET [/id/], DELETE [/id/]
@@ -847,7 +997,7 @@ class RiskAcceptanceResource(BaseModelResource):
 class FindingResource(BaseModelResource):
     reporter = fields.ForeignKey(UserResource, 'reporter', null=False)
     test = fields.ForeignKey(TestResource, 'test', null=False)
-    #risk_acceptance = fields.ManyToManyField(RiskAcceptanceResource, 'risk_acceptance', full=True, null=True)
+    # risk_acceptance = fields.ManyToManyField(RiskAcceptanceResource, 'risk_acceptance', full=True, null=True)
     product = fields.ForeignKey(ProductResource, 'test__engagement__product', full=False, null=False)
     engagement = fields.ForeignKey(EngagementResource, 'test__engagement', full=False, null=False)
 
@@ -876,10 +1026,10 @@ class FindingResource(BaseModelResource):
             'url': ALL,
             'out_of_scope': ALL,
             'duplicate': ALL,
-            #'risk_acceptance': ALL_WITH_RELATIONS,
+            # 'risk_acceptance': ALL_WITH_RELATIONS,
             'engagement': ALL_WITH_RELATIONS,
             'product': ALL_WITH_RELATIONS
-            #'build_id': ALL
+            # 'build_id': ALL
         }
         authentication = DojoApiKeyAuthentication()
         authorization = DjangoAuthorization()
@@ -896,6 +1046,7 @@ class FindingResource(BaseModelResource):
         bundle.data['product'] = \
             "/api/v1/products/%s/" % engagement[0].product.id
         return bundle
+
 
 """
     /api/v1/finding_templates/
@@ -917,7 +1068,7 @@ class FindingTemplateResource(BaseModelResource):
     class Meta:
         resource_name = 'finding_templates'
         queryset = Finding_Template.objects.all()
-        excludes= ['numerical_severity']
+        excludes = ['numerical_severity']
         # deleting of Finding_Template is not allowed via API.
         # Admin interface can be used for this.
         list_allowed_methods = ['get', 'post']
@@ -1090,26 +1241,29 @@ class ScanResource(BaseModelResource):
         authorization = UserScanAuthorization()
         serializer = Serializer(formats=['json'])
 
+
 # Method used to get Private Key from uri, Used in the ImportScan and ReImportScan resources
 def get_pk_from_uri(uri):
     prefix = get_script_prefix()
     chomped_uri = uri
 
     if prefix and chomped_uri.startswith(prefix):
-        chomped_uri = chomped_uri[len(prefix)-1:]
+        chomped_uri = chomped_uri[len(prefix) - 1:]
 
     try:
-        view, args, kwargs = resolve(chomped_uri)
+        view, args, kwargs = resolve(chomped_uri.replace('//', '/'))
     except Resolver404:
         raise NotFound("The URL provided '%s' was not a link to a valid resource." % uri)
 
     return kwargs['pk']
+
 
 """
     /api/v1/importscan/
     POST
     Expects file, scan_date, scan_type, tags, active, engagement
 """
+
 
 # Create an Object that will store all the information sent to the endpoint
 class ImportScanObject(object):
@@ -1130,6 +1284,7 @@ class ImportScanObject(object):
 
     def to_dict(self):
         return self._data
+
 
 # The default form validation was buggy so I implemented a custom validation class
 class ImportScanValidation(Validation):
@@ -1165,6 +1320,15 @@ class ImportScanValidation(Validation):
                 errors.setdefault('scan_type', []).append('scan_type must be one of the following: ' + ', '.join(scan_type_list))
         else:
             errors.setdefault('scan_type', []).append('A scan_type must be given so we know how to import the scan file.')
+        try:
+            if 'test_type' in bundle.data:
+                Test_Type.objects.get(name=bundle.data.get('test_type'))
+            else:
+                bundle.data['test_type'] = bundle.data.get('scan_type')
+        except Test_Type.DoesNotExist:
+            errors.setdefault('test_type', []).append(
+                'test_type must be one of the following: ' +
+                ', '.join(Test_Type.objects.values_list("name", flat=True)))
         severity_list = list(map(lambda x: x[0], SEVERITY_CHOICES))
         if 'minimum_severity' in bundle.data:
             if bundle.data['minimum_severity'] not in severity_list:
@@ -1189,6 +1353,7 @@ class ImportScanValidation(Validation):
                 errors.setdefault('verified', []).append('verified must be a boolean')
 
         return errors
+
 
 class BuildDetails(MultipartResource, Resource):
     file = fields.FileField(attribute='file')
@@ -1221,12 +1386,14 @@ class BuildDetails(MultipartResource, Resource):
 
         import_object_eng(bundle.request, bundle.obj.__getattr__('engagement_obj'), bundle.data['file'])
 
+
 class ImportScanResource(MultipartResource, Resource):
     scan_date = fields.DateTimeField(attribute='scan_date')
     minimum_severity = fields.CharField(attribute='minimum_severity')
     active = fields.BooleanField(attribute='active')
     verified = fields.BooleanField(attribute='verified')
     scan_type = fields.CharField(attribute='scan_type')
+    test_type = fields.CharField(attribute='test_type')
     tags = fields.CharField(attribute='tags')
     file = fields.FileField(attribute='file')
     engagement = fields.CharField(attribute='engagement')
@@ -1278,27 +1445,26 @@ class ImportScanResource(MultipartResource, Resource):
         bundle = self.full_hydrate(bundle)
 
         # We now have all the options we need and will just replicate the process in views.py
-        tt, t_created = Test_Type.objects.get_or_create(name=bundle.data['scan_type'])
+        tt, t_created = Test_Type.objects.get_or_create(name=bundle.data.get('test_type', bundle.data['scan_type']))
         # will save in development environment
         environment, env_created = Development_Environment.objects.get_or_create(name="Development")
 
         scan_date = datetime.strptime(bundle.data['scan_date'], '%Y-%m-%d')
 
-        t = Test(engagement=bundle.obj.__getattr__('engagement_obj'), lead = bundle.obj.__getattr__('user_obj'), test_type=tt, target_start=scan_date,
+        t = Test(engagement=bundle.obj.__getattr__('engagement_obj'), lead=bundle.obj.__getattr__('user_obj'), test_type=tt, target_start=scan_date,
                  target_end=scan_date, environment=environment, percent_complete=100)
 
         try:
             t.full_clean()
-        except ValidationError:
+        except ValidationError as e:
             print "Error Validating Test Object"
-            print ValidationError
+            print e
 
         t.save()
         t.tags = bundle.data['tags']
 
-
         try:
-            parser = import_parser_factory(bundle.data['file'], t)
+            parser = import_parser_factory(bundle.data['file'], t, bundle.data['scan_type'])
         except ValueError:
             raise NotFound("Parser ValueError")
 
@@ -1359,7 +1525,8 @@ class ImportScanResource(MultipartResource, Resource):
         # Everything executed fine. We successfully imported the scan.
         res = TestResource()
         uri = res.get_resource_uri(t)
-        raise ImmediateHttpResponse(HttpCreated(location = uri))
+        raise ImmediateHttpResponse(HttpCreated(location=uri))
+
 
 # The default form validation was buggy so I implemented a custom validation class
 class ReImportScanValidation(Validation):
@@ -1384,11 +1551,11 @@ class ReImportScanValidation(Validation):
         if 'test' not in bundle.data:
             errors.setdefault('test', []).append('test must be given')
         else:
-            # verify the engagement is valid
+            # verify the test is valid
             try:
                 get_pk_from_uri(uri=bundle.data['test'])
             except NotFound:
-                errors.setdefault('engagement', []).append('A valid engagement must be supplied. Ex. /api/v1/engagements/1/')
+                errors.setdefault('test', []).append('A valid test must be supplied. Ex. /api/v1/tests/1/')
         scan_type_list = list(map(lambda x: x[0], ImportScanForm.SCAN_TYPE_CHOICES))
         if 'scan_type' in bundle.data:
             if bundle.data['scan_type'] not in scan_type_list:
@@ -1419,6 +1586,7 @@ class ReImportScanValidation(Validation):
                 errors.setdefault('verified', []).append('verified must be a boolean')
 
         return errors
+
 
 class ReImportScanResource(MultipartResource, Resource):
     scan_date = fields.DateTimeField(attribute='scan_date')
@@ -1478,7 +1646,7 @@ class ReImportScanResource(MultipartResource, Resource):
         active = bundle.obj.__getattr__('active')
 
         try:
-            parser = import_parser_factory(bundle.data['file'], test)
+            parser = import_parser_factory(bundle.data['file'], test, scan_type)
         except ValueError:
             raise NotFound("Parser ValueError")
 
@@ -1587,4 +1755,4 @@ class ReImportScanResource(MultipartResource, Resource):
             raise NotFound("Parser SyntaxError")
 
         # Everything executed fine. We successfully imported the scan.
-        raise ImmediateHttpResponse(HttpCreated(location = bundle.obj.__getattr__('test')))
+        raise ImmediateHttpResponse(HttpCreated(location=bundle.obj.__getattr__('test')))

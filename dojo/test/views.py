@@ -1,31 +1,29 @@
 # #  tests
 
 import logging
-import sys
 import operator
 from datetime import datetime
 
-from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import user_passes_test
-from django.core.exceptions import PermissionDenied
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.urlresolvers import reverse
 from django.db.models import Q
-from django.http import HttpResponseRedirect, HttpResponseForbidden, Http404, HttpResponse
+from django.http import HttpResponseRedirect, Http404, HttpResponse
 from django.shortcuts import render, get_object_or_404
 from django.views.decorators.cache import cache_page
 from django.utils import timezone
+from django.contrib.admin.utils import NestedObjects
+from django.db import DEFAULT_DB_ALIAS
 
 from dojo.filters import TemplateFindingFilter
 from dojo.forms import NoteForm, TestForm, FindingForm, \
     DeleteTestForm, AddFindingForm, \
     ImportScanForm, ReImportScanForm, FindingBulkUpdateForm, JIRAFindingForm
-from dojo.models import Finding, Test, Notes, \
-    BurpRawRequestResponse, Endpoint, Stub_Finding, Finding_Template, JIRA_PKey, Cred_User, Cred_Mapping, Dojo_User
+from dojo.models import Product, Finding, Test, Notes, BurpRawRequestResponse, Endpoint, Stub_Finding, Finding_Template, JIRA_PKey, Cred_Mapping, Dojo_User, JIRA_Issue
 from dojo.tools.factory import import_parser_factory
-from dojo.utils import get_page_items, add_breadcrumb, get_cal_event, message, \
-                       process_notifications, get_system_setting, create_notification
-from dojo.tasks import add_issue_task
+from dojo.utils import get_page_items, add_breadcrumb, get_cal_event, message, process_notifications, get_system_setting, create_notification, Product_Tab, calculate_grade, log_jira_alert
+from dojo.tasks import add_issue_task, update_issue_task
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +37,7 @@ def view_test(request, tid):
         raise PermissionDenied
     notes = test.notes.all()
     person = request.user.username
-    findings = Finding.objects.filter(test=test)
+    findings = Finding.objects.filter(test=test).order_by('numerical_severity')
     stub_findings = Stub_Finding.objects.filter(test=test)
     cred_test = Cred_Mapping.objects.filter(test=test).select_related('cred_id').order_by('cred_id')
     creds = Cred_Mapping.objects.filter(engagement=test.engagement).select_related('cred_id').order_by('cred_id')
@@ -54,7 +52,7 @@ def view_test(request, tid):
             test.notes.add(new_note)
             form = NoteForm()
             url = request.build_absolute_uri(reverse("view_test", args=(test.id,)))
-            title="Test: %s on %s" % (test.test_type.name, test.engagement.product.name)
+            title = "Test: %s on %s" % (test.test_type.name, test.engagement.product.name)
             process_notifications(request, new_note, url, title)
             messages.add_message(request,
                                  messages.SUCCESS,
@@ -67,10 +65,13 @@ def view_test(request, tid):
     sfpage = get_page_items(request, stub_findings, 25)
     show_re_upload = any(test.test_type.name in code for code in ImportScanForm.SCAN_TYPE_CHOICES)
 
-    add_breadcrumb(parent=test, top_level=False, request=request)
+    product_tab = Product_Tab(prod.id, title="Test", tab="engagements")
+    product_tab.setEngagement(test.engagement)
     return render(request, 'dojo/view_test.html',
                   {'test': test,
+                   'product_tab': product_tab,
                    'findings': fpage,
+                   'findings_count': findings.count(),
                    'stub_findings': sfpage,
                    'form': form,
                    'notes': notes,
@@ -97,14 +98,17 @@ def edit_test(request, tid):
                                  messages.SUCCESS,
                                  'Test saved.',
                                  extra_tags='alert-success')
+            return HttpResponseRedirect(reverse('view_engagement', args=(test.engagement.id,)))
 
     form.initial['target_start'] = test.target_start.date()
     form.initial['target_end'] = test.target_end.date()
     form.initial['tags'] = [tag.name for tag in test.tags]
 
-    add_breadcrumb(parent=test, title="Edit", top_level=False, request=request)
+    product_tab = Product_Tab(test.engagement.product.id, title="Edit Test", tab="engagements")
+    product_tab.setEngagement(test.engagement)
     return render(request, 'dojo/edit_test.html',
                   {'test': test,
+                   'product_tab': product_tab,
                    'form': form,
                    })
 
@@ -114,13 +118,6 @@ def delete_test(request, tid):
     test = get_object_or_404(Test, pk=tid)
     eng = test.engagement
     form = DeleteTestForm(instance=test)
-
-    from django.contrib.admin.utils import NestedObjects
-    from django.db import DEFAULT_DB_ALIAS
-
-    collector = NestedObjects(using=DEFAULT_DB_ALIAS)
-    collector.collect([test])
-    rels = collector.nested()
 
     if request.method == 'POST':
         if 'id' in request.POST and str(test.id) == request.POST['id']:
@@ -134,9 +131,15 @@ def delete_test(request, tid):
                                      extra_tags='alert-success')
                 return HttpResponseRedirect(reverse('view_engagement', args=(eng.id,)))
 
-    add_breadcrumb(parent=test, title="Delete", top_level=False, request=request)
+    collector = NestedObjects(using=DEFAULT_DB_ALIAS)
+    collector.collect([test])
+    rels = collector.nested()
+
+    product_tab = Product_Tab(test.engagement.product.id, title="Delete Test", tab="engagements")
+    product_tab.setEngagement(test.engagement)
     return render(request, 'dojo/delete_test.html',
                   {'test': test,
+                   'product_tab': product_tab,
                    'form': form,
                    'rels': rels,
                    'deletable_objects': rels,
@@ -144,28 +147,13 @@ def delete_test(request, tid):
 
 
 @user_passes_test(lambda u: u.is_staff)
-def delete_test_note(request, tid, nid):
-    note = Notes.objects.get(id=nid)
-    test = Test.objects.get(id=tid)
-    if note.author == request.user:
-        test.notes.remove(note)
-        note.delete()
-        messages.add_message(request,
-                             messages.SUCCESS,
-                             'Note removed.',
-                             extra_tags='alert-success')
-        return view_test(request, tid)
-    return HttpResponseForbidden()
-
-
-@user_passes_test(lambda u: u.is_staff)
 @cache_page(60 * 5)  # cache for 5 minutes
 def test_calendar(request):
-    if not 'lead' in request.GET or '0' in request.GET.getlist('lead'):
+    if 'lead' not in request.GET or '0' in request.GET.getlist('lead'):
         tests = Test.objects.all()
     else:
         filters = []
-        leads = request.GET.getlist('lead','')
+        leads = request.GET.getlist('lead', '')
         if '-1' in request.GET.getlist('lead'):
             leads.remove('-1')
             filters.append(Q(lead__isnull=True))
@@ -177,6 +165,7 @@ def test_calendar(request):
         'leads': request.GET.getlist('lead', ''),
         'tests': tests,
         'users': Dojo_User.objects.all()})
+
 
 @user_passes_test(lambda u: u.is_staff)
 def test_ics(request, tid):
@@ -214,6 +203,20 @@ def add_findings(request, tid):
 
     if request.method == 'POST':
         form = AddFindingForm(request.POST)
+        if form['active'].value() is False or form['verified'].value() is False and 'jiraform-push_to_jira' in request.POST:
+            error = ValidationError('Findings must be active and verified to be pushed to JIRA',
+                                    code='not_active_or_verified')
+            if form['active'].value() is False:
+                form.add_error('active', error)
+            if form['verified'].value() is False:
+                form.add_error('verified', error)
+            messages.add_message(request,
+                                 messages.ERROR,
+                                 'Findings must be active and verified to be pushed to JIRA',
+                                 extra_tags='alert-danger')
+        if form['severity'].value() == 'Info' and 'jiraform-push_to_jira' in request.POST:
+            error = ValidationError('Findings with Informational severity cannot be pushed to JIRA.',
+                                    code='info-severity-to-jira')
         if form.is_valid():
             new_finding = form.save(commit=False)
             new_finding.test = test
@@ -228,7 +231,7 @@ def add_findings(request, tid):
             new_finding.is_template = False
             new_finding.save(dedupe_option=False)
             new_finding.endpoints = form.cleaned_data['endpoints']
-            new_finding.save()
+            new_finding.save(false_history=True)
             if 'jiraform-push_to_jira' in request.POST:
                 jform = JIRAFindingForm(request.POST, prefix='jiraform', enabled=enabled)
                 if jform.is_valid():
@@ -273,9 +276,11 @@ def add_findings(request, tid):
                                  messages.ERROR,
                                  'The form has errors, please correct them below.',
                                  extra_tags='alert-danger')
-    add_breadcrumb(parent=test, title="Add Finding", top_level=False, request=request)
+    product_tab = Product_Tab(test.engagement.product.id, title="Add Finding", tab="engagements")
+    product_tab.setEngagement(test.engagement)
     return render(request, 'dojo/add_findings.html',
                   {'form': form,
+                   'product_tab': product_tab,
                    'test': test,
                    'temp': False,
                    'tid': tid,
@@ -308,12 +313,13 @@ def add_temp_finding(request, tid, fid):
             # is template always False now in favor of new model Finding_Template
             # no further action needed here since this is already adding from template.
             new_finding.is_template = False
-            new_finding.save(dedupe_option=False)
+            new_finding.save(dedupe_option=False, false_history=False)
             new_finding.endpoints = form.cleaned_data['endpoints']
-            new_finding.save()
+            new_finding.save(false_history=True)
             if 'jiraform-push_to_jira' in request.POST:
                     jform = JIRAFindingForm(request.POST, prefix='jiraform', enabled=True)
-                    add_issue_task.delay(new_finding, jform.cleaned_data.get('push_to_jira'))
+                    if jform.is_valid():
+                        add_issue_task.delay(new_finding, jform.cleaned_data.get('push_to_jira'))
             messages.add_message(request,
                                  messages.SUCCESS,
                                  'Finding from template added successfully.',
@@ -370,9 +376,11 @@ def add_temp_finding(request, tid, fid):
         else:
             jform = None
 
-    add_breadcrumb(parent=test, title="Add Finding", top_level=False, request=request)
+    product_tab = Product_Tab(test.engagement.product.id, title="Add Finding", tab="engagements")
+    product_tab.setEngagement(test.engagement)
     return render(request, 'dojo/add_findings.html',
                   {'form': form,
+                   'product_tab': product_tab,
                    'jform': jform,
                    'findings': findings,
                    'temp': True,
@@ -405,30 +413,46 @@ def search(request, tid):
 @user_passes_test(lambda u: u.is_staff)
 def finding_bulk_update(request, tid):
     test = get_object_or_404(Test, id=tid)
-    finding = test.finding_set.all()[0]
     form = FindingBulkUpdateForm(request.POST)
+
     if request.method == "POST":
         finding_to_update = request.POST.getlist('finding_to_update')
         if request.POST.get('delete_bulk_findings') and finding_to_update:
             finds = Finding.objects.filter(test=test, id__in=finding_to_update)
+            product = Product.objects.get(engagement__test=test)
             finds.delete()
+            calculate_grade(product)
         else:
             if form.is_valid() and finding_to_update:
                 finding_to_update = request.POST.getlist('finding_to_update')
                 finds = Finding.objects.filter(test=test, id__in=finding_to_update)
                 if form.cleaned_data['severity']:
                     finds.update(severity=form.cleaned_data['severity'],
-                                 active=form.cleaned_data['active'],
-                                 verified=form.cleaned_data['verified'],
-                                 false_p=form.cleaned_data['false_p'],
-                                 duplicate=form.cleaned_data['duplicate'],
-                                 out_of_scope=form.cleaned_data['out_of_scope'])
-                else:
+                                 numerical_severity=Finding.get_numerical_severity(form.cleaned_data['severity']),
+                                 last_reviewed=timezone.now(),
+                                 last_reviewed_by=request.user)
+                if form.cleaned_data['status']:
                     finds.update(active=form.cleaned_data['active'],
                                  verified=form.cleaned_data['verified'],
                                  false_p=form.cleaned_data['false_p'],
-                                 duplicate=form.cleaned_data['duplicate'],
-                                 out_of_scope=form.cleaned_data['out_of_scope'])
+                                 out_of_scope=form.cleaned_data['out_of_scope'],
+                                 last_reviewed=timezone.now(),
+                                 last_reviewed_by=request.user)
+
+                # Update the grade as bulk edits don't go through save
+                if form.cleaned_data['severity'] or form.cleaned_data['status']:
+                    calculate_grade(test.engagement.product)
+
+                for finding in finds:
+                    if JIRA_PKey.objects.filter(product=finding.test.engagement.product).count() == 0:
+                        log_jira_alert('Finding cannot be pushed to jira as there is no jira configuration for this product.', finding)
+                    else:
+                        old_status = finding.status()
+                        if form.cleaned_data['push_to_jira']:
+                            if JIRA_Issue.objects.filter(finding=finding).exists():
+                                update_issue_task.delay(finding, old_status, True)
+                            else:
+                                add_issue_task.delay(finding, True)
 
                 messages.add_message(request,
                                      messages.SUCCESS,
@@ -483,6 +507,7 @@ def re_import_scan_results(request, tid):
                     sev = item.severity
                     if sev == 'Information' or sev == 'Informational':
                         sev = 'Info'
+                        item.severity = sev
 
                     if Finding.SEVERITIES[sev] > Finding.SEVERITIES[min_sev]:
                         continue
@@ -596,7 +621,7 @@ def re_import_scan_results(request, tid):
                                                                  'mitigated') + '. Please manually verify each one.',
                                          extra_tags='alert-success')
 
-                create_notification(event='results_added', title='Results added', finding_count=finding_count, test=t, engagement=engagement, url=request.build_absolute_uri(reverse('view_test', args=(t.id,))))
+                create_notification(event='results_added', title=str(finding_count) + " findings for " + engagement.product.name, finding_count=finding_count, test=t, engagement=engagement, url=request.build_absolute_uri(reverse('view_test', args=(t.id,))))
 
                 return HttpResponseRedirect(reverse('view_test', args=(t.id,)))
             except SyntaxError:
@@ -605,10 +630,12 @@ def re_import_scan_results(request, tid):
                                      'There appears to be an error in the XML report, please check and try again.',
                                      extra_tags='alert-danger')
 
-    add_breadcrumb(parent=t, title="Re-upload a %s" % scan_type, top_level=False, request=request)
+    product_tab = Product_Tab(engagement.product.id, title="Re-upload a %s" % scan_type, tab="engagements")
+    product_tab.setEngagement(engagement)
     return render(request,
                   'dojo/import_scan_results.html',
                   {'form': form,
+                   'product_tab': product_tab,
                    'eid': engagement.id,
                    'additional_message': additional_message,
                    })

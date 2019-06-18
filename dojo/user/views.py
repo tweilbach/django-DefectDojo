@@ -9,6 +9,9 @@ from django.core.urlresolvers import reverse
 from django.db.models import Q
 from django.http import HttpResponseRedirect, HttpResponse, JsonResponse
 from django.shortcuts import render, get_object_or_404
+from django.contrib.admin.utils import NestedObjects
+from django.db import DEFAULT_DB_ALIAS
+from rest_framework.authtoken.models import Token
 from tastypie.models import ApiKey
 
 from dojo.filters import UserFilter
@@ -55,6 +58,41 @@ def api_key(request):
                    'form': form,
                    })
 
+
+# #  Django Rest Framework API v2
+
+def api_v2_key(request):
+    api_key = ''
+    form = APIKeyForm(instance=request.user)
+    if request.method == 'POST':  # new key requested
+        form = APIKeyForm(request.POST, instance=request.user)
+        if form.is_valid() and form.cleaned_data['id'] == request.user.id:
+            try:
+                api_key = Token.objects.get(user=request.user)
+                api_key.delete()
+                api_key = Token.objects.create(user=request.user)
+            except Token.DoesNotExist:
+                api_key = Token.objects.create(user=request.user)
+            messages.add_message(request,
+                                 messages.SUCCESS,
+                                 'API Key generated successfully.',
+                                 extra_tags='alert-success')
+        else:
+            raise PermissionDenied
+    else:
+        try:
+            api_key = Token.objects.get(user=request.user)
+        except Token.DoesNotExist:
+            api_key = Token.objects.create(user=request.user)
+    add_breadcrumb(title="API Key", top_level=True, request=request)
+
+    return render(request, 'dojo/api_v2_key.html',
+                  {'name': 'API v2 Key',
+                   'metric': False,
+                   'user': request.user,
+                   'key': api_key,
+                   'form': form,
+                   })
 
 # #  user specific
 
@@ -138,10 +176,17 @@ def change_password(request):
     if request.method == 'POST':
         current_pwd = request.POST['current_password']
         new_pwd = request.POST['new_password']
+        confirm_pwd = request.POST['confirm_password']
         user = authenticate(username=request.user.username,
                             password=current_pwd)
         if user is not None:
             if user.is_active:
+                if new_pwd != confirm_pwd:
+                    messages.add_message(request, messages.ERROR, 'Passwords do not match.', extra_tags='alert-danger')
+                    return render(request, 'dojo/change_pwd.html', {'error': ''})
+                if new_pwd == current_pwd:
+                    messages.add_message(request, messages.ERROR, 'New password must be different from current password.', extra_tags='alert-danger')
+                    return render(request, 'dojo/change_pwd.html', {'error': ''})
                 user.set_password(new_pwd)
                 user.save()
                 messages.add_message(request,
@@ -173,7 +218,7 @@ def user(request):
                    })
 
 
-@user_passes_test(lambda u: u.is_staff)
+@user_passes_test(lambda u: u.is_superuser)
 def add_user(request):
     form = AddDojoUserForm()
     if not request.user.is_superuser:
@@ -216,7 +261,7 @@ def add_user(request):
         'to_add': True})
 
 
-@user_passes_test(lambda u: u.is_staff)
+@user_passes_test(lambda u: u.is_superuser)
 def edit_user(request, uid):
     user = get_object_or_404(Dojo_User, id=uid)
     authed_products = Product.objects.filter(authorized_users__in=[user])
@@ -267,17 +312,10 @@ def edit_user(request, uid):
         'to_edit': user})
 
 
-@user_passes_test(lambda u: u.is_staff)
+@user_passes_test(lambda u: u.is_superuser)
 def delete_user(request, uid):
     user = get_object_or_404(Dojo_User, id=uid)
     form = DeleteUserForm(instance=user)
-
-    from django.contrib.admin.utils import NestedObjects
-    from django.db import DEFAULT_DB_ALIAS
-
-    collector = NestedObjects(using=DEFAULT_DB_ALIAS)
-    collector.collect([user])
-    rels = collector.nested()
 
     if user.id == request.user.id:
         messages.add_message(request,
@@ -296,6 +334,11 @@ def delete_user(request, uid):
                                      'User and relationships removed.',
                                      extra_tags='alert-success')
                 return HttpResponseRedirect(reverse('users'))
+
+    collector = NestedObjects(using=DEFAULT_DB_ALIAS)
+    collector.collect([user])
+    rels = collector.nested()
+
     add_breadcrumb(title="Delete User", top_level=False, request=request)
     return render(request, 'dojo/delete_user.html',
                   {'to_delete': user,

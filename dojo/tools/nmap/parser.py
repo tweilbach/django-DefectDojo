@@ -1,15 +1,17 @@
 from xml.dom import NamespaceErr
 import lxml.etree as le
-import os
-import csv
-import re
 from dojo.models import Endpoint, Finding
-from pprint import pprint
 
 __author__ = 'patriknordlen'
 
+
 class NmapXMLParser(object):
     def __init__(self, file, test):
+        self.dupes = dict()
+        self.items = ()
+        if file is None:
+            return
+
         parser = le.XMLParser(resolve_entities=False)
         nscan = le.parse(file, parser)
         root = nscan.getroot()
@@ -26,12 +28,13 @@ class NmapXMLParser(object):
             for os in root.iter("os"):
                 if ip is not None:
                     hostInfo += "IP Address: %s\n" % ip
-                if  fqdn is not None:
-                    fqdn += "FQDN: %s\n" % ip     
-                if 'name' in os.find('osmatch').attrib:
-                    hostInfo += "Host OS: %s\n" % os.find('osmatch').attrib['name']
-                if 'accuracy' in os.find('osmatch').attrib:
-                    hostInfo += "Accuracy: {0}%\n".format(os.find('osmatch').attrib['accuracy'])
+                if fqdn is not None:
+                    fqdn += "FQDN: %s\n" % ip
+                if os.find('osmatch') is not None:
+                    if 'name' in os.find('osmatch').attrib:
+                        hostInfo += "Host OS: %s\n" % os.find('osmatch').attrib['name']
+                    if 'accuracy' in os.find('osmatch').attrib:
+                        hostInfo += "Accuracy: {0}%\n".format(os.find('osmatch').attrib['accuracy'])
 
                 hostInfo += "\n"
 
@@ -62,8 +65,8 @@ class NmapXMLParser(object):
 
                 dupe_key = port
 
-                if dupe_key in dupes:
-                    find = dupes[dupe_key]
+                if dupe_key in self.dupes:
+                    find = self.dupes[dupe_key]
                     if description is not None:
                         find.description += description
                 else:
@@ -75,7 +78,7 @@ class NmapXMLParser(object):
                                     severity=severity,
                                     numerical_severity=Finding.get_numerical_severity(severity))
                     find.unsaved_endpoints = list()
-                    dupes[dupe_key] = find
+                    self.dupes[dupe_key] = find
 
                 find.unsaved_endpoints.append(Endpoint(host=ip, fqdn=fqdn, port=port, protocol=protocol))
-        self.items = dupes.values()
+        self.items = self.dupes.values()
